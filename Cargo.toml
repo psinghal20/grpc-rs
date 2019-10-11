@@ -19,7 +19,7 @@ all-features = true
 [dependencies]
 grpcio-sys = { path = "grpc-sys", version = "0.5.0-alpha" }
 libc = "0.2"
-futures = "^0.1.15"
+futures-preview = { version = "=0.3.0-alpha.17", features = ["compat"] }
 protobuf = { version = "2.0", optional = true }
 prost = { version = "0.5", optional = true }
 bytes = { version = "0.4.11", optional = true }
