@@ -21,7 +21,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::grpc_sys::{self, grpc_call_error, grpc_server};
-use futures::{Async, Future, Poll};
+use futures::{Future, Poll};
+use futures::task::Context;
+use std::pin::Pin;
 
 use crate::call::server::*;
 use crate::call::{MessageReader, Method, MethodType};
@@ -437,21 +439,6 @@ pub fn request_call(ctx: RequestCallContext, cq: &CompletionQueue) {
     }
 }
 
-/// A `Future` that will resolve when shutdown completes.
-pub struct ShutdownFuture {
-    cq_f: CqFuture<()>,
-}
-
-impl Future for ShutdownFuture {
-    type Item = ();
-    type Error = Error;
-
-    fn poll(&mut self) -> Poll<(), Error> {
-        try_ready!(self.cq_f.poll());
-        Ok(Async::Ready(()))
-    }
-}
-
 /// A gRPC server.
 ///
 /// A single server can serve arbitrary number of services and can listen on more than one port.
@@ -465,7 +452,7 @@ pub struct Server {
 
 impl Server {
     /// Shutdown the server asynchronously.
-    pub fn shutdown(&mut self) -> ShutdownFuture {
+    pub async fn shutdown(&mut self) -> Result<()> {
         let (cq_f, prom) = CallTag::shutdown_pair();
         let prom_box = Box::new(prom);
         let tag = Box::into_raw(prom_box);
@@ -479,7 +466,8 @@ impl Server {
             )
         }
         self.core.shutdown.store(true, Ordering::SeqCst);
-        ShutdownFuture { cq_f }
+        cq_f.await;
+        Ok(())
     }
 
     /// Cancel all in-progress calls.
