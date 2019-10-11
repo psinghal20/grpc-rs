@@ -11,7 +11,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use futures::Future;
+use futures::future::Future;
 
 use crate::call::client::{
     CallOption, ClientCStreamReceiver, ClientCStreamSender, ClientDuplexReceiver,
@@ -102,7 +102,7 @@ impl Client {
     /// sure there is no heavy work in the future.
     pub fn spawn<F>(&self, f: F)
     where
-        F: Future<Item = (), Error = ()> + Send + 'static,
+        F: Future<Output=Result<()>> + Send + 'static,
     {
         let kicker = self.kicker.clone();
         Executor::new(self.channel.cq()).spawn(f, kicker)
