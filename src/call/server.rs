@@ -18,7 +18,11 @@ use std::{result, slice};
 use crate::grpc_sys::{
     self, gpr_clock_type, gpr_timespec, grpc_call_error, grpcwrap_request_call_context,
 };
-use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+// use futures::{Async, AsyncSink, Future, Poll, Sink, StartSend, Stream};
+use futures::stream::Stream;
+use futures::future::Future;
+use futures::task::{Context, Poll};
+use std::pin::Pin;
 
 use super::{RpcStatus, ShareCall, ShareCallHolder, WriteFlags};
 use crate::call::{
@@ -252,19 +256,18 @@ impl<T> RequestStream<T> {
 }
 
 impl<T> Stream for RequestStream<T> {
-    type Item = T;
-    type Error = Error;
+    type Item = Result<T>;
 
-    fn poll(&mut self) -> Poll<Option<T>, Error> {
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         {
             let mut call = self.call.lock();
             call.check_alive()?;
         }
 
-        match try_ready!(self.base.poll(&mut self.call, false)).map(self.de) {
-            None => Ok(Async::Ready(None)),
-            Some(Ok(data)) => Ok(Async::Ready(Some(data))),
-            Some(Err(err)) => Err(err),
+        match ready!(self.base.poll(&mut self.call, false)).map(self.de) {
+            None => Poll::Ready(None),
+            Some(Ok(data)) => Poll::Ready(Some(Ok(data))),
+            Some(Err(err)) => Poll::Ready(Some(Err(err))),
         }
     }
 }
@@ -290,20 +293,19 @@ macro_rules! impl_unary_sink {
         }
 
         impl Future for $rt {
-            type Item = ();
-            type Error = Error;
+            type Output = Result<()>;
 
-            fn poll(&mut self) -> Poll<(), Error> {
+            fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
                 if self.cq_f.is_some() || self.err.is_some() {
                     if let Some(e) = self.err.take() {
                         return Err(e);
                     }
-                    try_ready!(self.cq_f.as_mut().unwrap().poll());
+                    ready!(self.cq_f.as_mut().unwrap().poll());
                     self.cq_f.take();
                 }
 
-                try_ready!(self.call.call(ShareCall::poll_finish));
-                Ok(Async::Ready(()))
+                ready!(self.call.call(ShareCall::poll_finish));
+                Poll::Ready(Ok(()))
             }
         }
 
@@ -463,8 +465,12 @@ macro_rules! impl_stream_sink {
         }
 
         impl<T> Sink for $t<T> {
-            type SinkItem = (T, WriteFlags);
-            type SinkError = Error;
+            // type SinkItem = (T, WriteFlags);
+            // type SinkError = Error;
+            type Error = Error;
+            fn poll_ready(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Result<(), Self::Error>> {
+
+            }
 
             fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Error> {
                 if let Async::Ready(_) = self.call.as_mut().unwrap().call(ShareCall::poll_finish)? {

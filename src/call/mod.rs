@@ -24,7 +24,8 @@ use crate::grpc_sys::{
 };
 #[cfg(feature = "prost-codec")]
 use bytes::Buf;
-use futures::{Async, Future, Poll};
+use futures::future::Future;
+use futures::task::Poll;
 use libc::c_void;
 
 use crate::codec::{DeserializeFn, Marshaller, SerializeFn};
@@ -643,16 +644,16 @@ impl ShareCall {
     /// Poll if the call is still alive.
     ///
     /// If the call is still running, will register a notification for its completion.
-    fn poll_finish(&mut self) -> Poll<Option<MessageReader>, Error> {
+    fn poll_finish(&mut self) -> Poll<Result<Option<MessageReader>>> {
         let res = match self.close_f.poll() {
             Err(Error::RpcFailure(status)) => {
                 self.status = Some(status.clone());
-                Err(Error::RpcFailure(status))
+                Poll::Ready(Err(Error::RpcFailure(status)))
             }
-            Ok(Async::NotReady) => return Ok(Async::NotReady),
-            Ok(Async::Ready(msg)) => {
+            Ok(Poll::Pending) => return Poll::Pending,
+            Ok(Poll::Ready(msg)) => {
                 self.status = Some(RpcStatus::ok());
-                Ok(Async::Ready(msg))
+                Poll::Ready(Ok(Some(msg)))
             }
             res => res,
         };
@@ -710,17 +711,17 @@ impl StreamingBase {
         &mut self,
         call: &mut C,
         skip_finish_check: bool,
-    ) -> Poll<Option<MessageReader>, Error> {
+    ) -> Poll<Result<Option<MessageReader>>> {
         if !skip_finish_check {
             let mut finished = false;
             if let Some(ref mut close_f) = self.close_f {
                 match close_f.poll() {
-                    Ok(Async::Ready(_)) => {
+                    Ok(Poll::Ready(_)) => {
                         // don't return immediately, there maybe pending data.
                         finished = true;
                     }
-                    Err(e) => return Err(e),
-                    Ok(Async::NotReady) => {}
+                    Err(e) => return Poll::Ready(Err(e)),
+                    Ok(Poll::Pending) => {}
                 }
             }
             if finished {
@@ -731,7 +732,7 @@ impl StreamingBase {
         let mut bytes = None;
         if !self.read_done {
             if let Some(ref mut msg_f) = self.msg_f {
-                bytes = try_ready!(msg_f.poll());
+                bytes = ready!(msg_f.poll());
                 if bytes.is_none() {
                     self.read_done = true;
                 }
@@ -740,9 +741,9 @@ impl StreamingBase {
 
         if self.read_done {
             if self.close_f.is_none() {
-                return Ok(Async::Ready(bytes));
+                return Ok(Poll::Ready(bytes));
             }
-            return Ok(Async::NotReady);
+            return Ok(Poll::Pending);
         }
 
         // so msg_f must be either stale or not initialised yet.
@@ -752,7 +753,7 @@ impl StreamingBase {
         if bytes.is_none() {
             self.poll(call, true)
         } else {
-            Ok(Async::Ready(bytes))
+            Ok(Poll::Ready(bytes))
         }
     }
 
@@ -822,6 +823,16 @@ impl SinkBase {
         }
     }
 
+    fn poll_ready(&mut self) -> Result<bool> {
+        if self.batch_f.is_some() {
+            // try its best not to return false.
+            self.poll_complete()?;
+            if self.batch_f.is_some() {
+                return Ok(false);
+            }
+        }
+    }
+
     fn start_send<T, C: ShareCallHolder>(
         &mut self,
         call: &mut C,
@@ -852,13 +863,13 @@ impl SinkBase {
         Ok(true)
     }
 
-    fn poll_complete(&mut self) -> Poll<(), Error> {
+    fn poll_complete(&mut self) -> Poll<Result<()>> {
         if let Some(ref mut batch_f) = self.batch_f {
-            try_ready!(batch_f.poll());
+            ready!(batch_f.poll());
         }
 
         self.batch_f.take();
-        Ok(Async::Ready(()))
+        Ok(Poll::Ready(Ok(())))
     }
 }
 
